@@ -86,6 +86,42 @@ const error = {
   ],
 };
 
+const resource_limits_error = {
+  data: { user: null },
+  errors: [
+    {
+      type: "RESOURCE_LIMITS_EXCEEDED",
+      path: ["user", "repositoriesContributedTo"],
+      locations: [],
+      message: "Resource limits for this query exceeded.",
+    },
+  ],
+};
+
+const data_stats_profile_part = JSON.parse(JSON.stringify(data_stats));
+delete data_stats_profile_part.data.user.repositoriesContributedTo;
+delete data_stats_profile_part.data.user.contributionsCollection;
+
+const data_stats_commits_part = {
+  data: {
+    user: { contributionsCollection: { totalCommitContributions: 100 } },
+  },
+};
+const data_stats_reviews_part = {
+  data: {
+    user: {
+      contributionsCollection: { totalPullRequestReviewContributions: 50 },
+    },
+  },
+};
+const data_stats_contributed_to_part = {
+  data: {
+    user: {
+      contributionsCollection: { totalRepositoriesWithContributedCommits: 23 },
+    },
+  },
+};
+
 const mock = new MockAdapter(axios);
 
 beforeEach(() => {
@@ -174,6 +210,52 @@ describe("Test fetchStats", () => {
 
     await expect(fetchStats("anuraghazra")).rejects.toThrow(
       "Could not resolve to a User with the login of 'noname'.",
+    );
+  });
+
+  it("should split the stats query when it exceeds GitHub resource limits", async () => {
+    mock.reset();
+    const requests = [];
+    mock.onPost("https://api.github.com/graphql").reply((cfg) => {
+      requests.push(cfg.data);
+      if (requests.length === 1) {
+        return [200, resource_limits_error];
+      }
+      if (cfg.data.includes("totalRepositoriesWithContributedCommits")) {
+        return [200, data_stats_contributed_to_part];
+      }
+      if (cfg.data.includes("totalPullRequestReviewContributions")) {
+        return [200, data_stats_reviews_part];
+      }
+      if (cfg.data.includes("totalCommitContributions")) {
+        return [200, data_stats_commits_part];
+      }
+      return [200, data_stats_profile_part];
+    });
+
+    let stats = await fetchStats("anuraghazra");
+
+    expect(requests).toHaveLength(5);
+    expect(requests[0]).toContain("repositoriesContributedTo");
+    const splitRequests = requests.slice(1);
+    for (const request of splitRequests) {
+      expect(request).not.toContain("repositoriesContributedTo");
+    }
+    expect(stats.contributedTo).toBe(23);
+    expect(stats.totalCommits).toBe(100);
+    expect(stats.totalReviews).toBe(50);
+    expect(stats.totalStars).toBe(300);
+    expect(stats.name).toBe("Anurag Hazra");
+  });
+
+  it("should throw when resource limits persist even after splitting the query", async () => {
+    mock.reset();
+    mock
+      .onPost("https://api.github.com/graphql")
+      .reply(200, resource_limits_error);
+
+    await expect(fetchStats("anuraghazra")).rejects.toThrow(
+      "Resource limits for this query exceeded.",
     );
   });
 
