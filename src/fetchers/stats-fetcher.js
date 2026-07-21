@@ -156,6 +156,20 @@ const fetcher = (variables, token) => {
 };
 
 /**
+ * Check whether a response body is not shaped like a GraphQL response.
+ *
+ * GitHub occasionally answers overloaded queries with an HTML error page and
+ * status 200; treating it as GraphQL data crashes the fetcher.
+ *
+ * @param {AxiosResponse} res Axios response.
+ * @returns {boolean} True when the body has neither data nor errors.
+ */
+const isMalformedGraphQLResponse = (res) =>
+  !res.data ||
+  typeof res.data !== "object" ||
+  (!res.data.data && !res.data.errors);
+
+/**
  * Fetch the stats query in parts, each within GitHub's per-query resource
  * budget, and merge them into a single response.
  *
@@ -170,6 +184,12 @@ const splitStatsFetcher = async (variables) => {
   const responses = [];
   for (const part of parts) {
     const res = await retryer(fetcher, { ...variables, statsQueryPart: part });
+    if (isMalformedGraphQLResponse(res)) {
+      throw new CustomError(
+        "GitHub GraphQL API returned an unexpected response.",
+        CustomError.GRAPHQL_ERROR,
+      );
+    }
     if (res.data.errors) {
       return res;
     }
@@ -214,15 +234,26 @@ const statsFetcher = async ({
       includeDiscussionsAnswers,
     };
     let res = await retryer(fetcher, variables);
-    if (res.data.errors) {
-      const isResourceLimited = res.data.errors.some(
-        (error) => error?.type === "RESOURCE_LIMITS_EXCEEDED",
-      );
-      if (isResourceLimited && !endCursor) {
+    const malformed = isMalformedGraphQLResponse(res);
+    if (malformed || res.data.errors) {
+      const isResourceLimited =
+        !malformed &&
+        res.data.errors.some(
+          (error) => error?.type === "RESOURCE_LIMITS_EXCEEDED",
+        );
+      // A malformed 200 response (e.g. an HTML error page) is treated as
+      // another overload symptom and retried as split queries.
+      if ((isResourceLimited || malformed) && !endCursor) {
         logger.log(
-          "Stats query exceeded GitHub resource limits. Retrying as split queries.",
+          "Stats query exceeded GitHub resource limits or returned an unexpected response. Retrying as split queries.",
         );
         res = await splitStatsFetcher(variables);
+      }
+      if (isMalformedGraphQLResponse(res)) {
+        throw new CustomError(
+          "GitHub GraphQL API returned an unexpected response.",
+          CustomError.GRAPHQL_ERROR,
+        );
       }
       if (res.data.errors) {
         return res;

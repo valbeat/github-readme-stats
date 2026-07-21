@@ -252,6 +252,44 @@ describe("Test fetchStats", () => {
     expect(stats.name).toBe("Anurag Hazra");
   });
 
+  it("should fall back to split queries when the response is not GraphQL-shaped", async () => {
+    mock.reset();
+    const requests = [];
+    mock.onPost("https://api.github.com/graphql").reply((cfg) => {
+      requests.push(cfg.data);
+      if (requests.length === 1) {
+        return [200, "<html>Unicorn!</html>"];
+      }
+      if (cfg.data.includes("totalRepositoriesWithContributedCommits")) {
+        return [200, data_stats_contributed_to_part];
+      }
+      if (cfg.data.includes("totalPullRequestReviewContributions")) {
+        return [200, data_stats_reviews_part];
+      }
+      if (cfg.data.includes("totalCommitContributions")) {
+        return [200, data_stats_commits_part];
+      }
+      return [200, data_stats_profile_part];
+    });
+
+    let stats = await fetchStats("anuraghazra");
+
+    expect(requests).toHaveLength(5);
+    expect(stats.contributedTo).toBe(23);
+    expect(stats.totalStars).toBe(300);
+  });
+
+  it("should throw a clean error when split responses are also malformed", async () => {
+    mock.reset();
+    mock
+      .onPost("https://api.github.com/graphql")
+      .reply(200, "<html>Unicorn!</html>");
+
+    await expect(fetchStats("anuraghazra")).rejects.toThrow(
+      "GitHub GraphQL API returned an unexpected response.",
+    );
+  });
+
   it("should throw when resource limits persist even after splitting the query", async () => {
     mock.reset();
     mock
