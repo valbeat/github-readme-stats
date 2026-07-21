@@ -237,6 +237,10 @@ describe("Test fetchStats", () => {
 
     expect(requests).toHaveLength(5);
     expect(requests[0]).toContain("repositoriesContributedTo");
+    expect(requests[1]).toContain("pullRequests");
+    expect(requests[2]).toContain("totalCommitContributions");
+    expect(requests[3]).toContain("totalPullRequestReviewContributions");
+    expect(requests[4]).toContain("totalRepositoriesWithContributedCommits");
     const splitRequests = requests.slice(1);
     for (const request of splitRequests) {
       expect(request).not.toContain("repositoriesContributedTo");
