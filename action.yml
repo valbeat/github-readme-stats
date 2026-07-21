@@ -1,0 +1,26 @@
+name: Generate readme stats cards
+description: >-
+  Generate github-readme-stats / top-langs cards as static SVG files (dark and
+  light themes) using the workflow's GITHUB_TOKEN instead of a personal access
+  token.
+inputs:
+  username:
+    description: GitHub username to render.
+    required: true
+  output-dir:
+    description: Directory to write the generated SVG files into.
+    required: false
+    default: "."
+runs:
+  using: composite
+  steps:
+    - name: Install dependencies
+      run: npm ci --prefix "${{ github.action_path }}"
+      shell: bash
+    - name: Generate cards
+      run: node "${{ github.action_path }}/scripts/generate-cards.mjs"
+      shell: bash
+      env:
+        PAT_1: ${{ env.GITHUB_TOKEN }}
+        CARD_USERNAME: ${{ inputs.username }}
+        CARD_OUT_DIR: ${{ inputs.output-dir }}
