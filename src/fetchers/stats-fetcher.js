@@ -214,7 +214,7 @@ const statsFetcher = async ({
     let res = await retryer(fetcher, variables);
     if (res.data.errors) {
       const isResourceLimited = res.data.errors.some(
-        (error) => error.type === "RESOURCE_LIMITS_EXCEEDED",
+        (error) => error?.type === "RESOURCE_LIMITS_EXCEEDED",
       );
       if (isResourceLimited && !endCursor) {
         logger.log(
