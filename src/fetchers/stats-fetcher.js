@@ -39,18 +39,39 @@ const GRAPHQL_REPOS_QUERY = `
   }
 `;
 
-const GRAPHQL_STATS_QUERY = `
+// The repositoriesContributedTo field is rejected with
+// RESOURCE_LIMITS_EXCEEDED by GitHub's GraphQL API for accounts with large
+// contribution histories, so it must be omittable from the stats query. Its
+// fallback, contributionsCollection.totalRepositoriesWithContributedCommits,
+// only counts commit contributions within the last year, which still matches
+// the "Contributed to (last year)" card label.
+const GRAPHQL_CONTRIBUTED_TO_FIELD = `
+      repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {
+        totalCount
+      }
+`;
+
+/**
+ * Build the stats GraphQL query.
+ *
+ * @param {boolean} excludeContributedTo Exclude the expensive repositoriesContributedTo field and fetch its cheaper fallback instead.
+ * @returns {string} GraphQL query.
+ */
+const buildStatsQuery = (excludeContributedTo) => `
   query userInfo($login: String!, $after: String, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!) {
     user(login: $login) {
       name
       login
       contributionsCollection {
         totalCommitContributions,
-        totalPullRequestReviewContributions
+        totalPullRequestReviewContributions${
+          excludeContributedTo
+            ? `,
+        totalRepositoriesWithContributedCommits`
+            : ""
+        }
       }
-      repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {
-        totalCount
-      }
+${excludeContributedTo ? "" : GRAPHQL_CONTRIBUTED_TO_FIELD}
       pullRequests(first: 1) {
         totalCount
       }
@@ -89,7 +110,9 @@ const GRAPHQL_STATS_QUERY = `
  * @returns {Promise<AxiosResponse>} Axios response.
  */
 const fetcher = (variables, token) => {
-  const query = variables.after ? GRAPHQL_REPOS_QUERY : GRAPHQL_STATS_QUERY;
+  const query = variables.after
+    ? GRAPHQL_REPOS_QUERY
+    : buildStatsQuery(variables.excludeContributedTo === true);
   return request(
     {
       query,
@@ -122,6 +145,7 @@ const statsFetcher = async ({
   let stats;
   let hasNextPage = true;
   let endCursor = null;
+  let excludeContributedTo = false;
   while (hasNextPage) {
     const variables = {
       login: username,
@@ -130,9 +154,20 @@ const statsFetcher = async ({
       includeMergedPullRequests,
       includeDiscussions,
       includeDiscussionsAnswers,
+      excludeContributedTo,
     };
     let res = await retryer(fetcher, variables);
     if (res.data.errors) {
+      const isResourceLimited = res.data.errors.some(
+        (error) => error.type === "RESOURCE_LIMITS_EXCEEDED",
+      );
+      if (isResourceLimited && !excludeContributedTo && !endCursor) {
+        logger.log(
+          "Stats query exceeded GitHub resource limits. Retrying without the repositoriesContributedTo field.",
+        );
+        excludeContributedTo = true;
+        continue;
+      }
       return res;
     }
 
@@ -301,7 +336,9 @@ const fetchStats = async (
     stats.totalDiscussionsAnswered =
       user.repositoryDiscussionComments.totalCount;
   }
-  stats.contributedTo = user.repositoriesContributedTo.totalCount;
+  stats.contributedTo = user.repositoriesContributedTo
+    ? user.repositoriesContributedTo.totalCount
+    : user.contributionsCollection.totalRepositoriesWithContributedCommits;
 
   // Retrieve stars while filtering out repositories to be hidden.
   let repoToHide = new Set(exclude_repo);
