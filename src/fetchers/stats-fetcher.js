@@ -39,39 +39,9 @@ const GRAPHQL_REPOS_QUERY = `
   }
 `;
 
-// The repositoriesContributedTo field is rejected with
-// RESOURCE_LIMITS_EXCEEDED by GitHub's GraphQL API for accounts with large
-// contribution histories, so it must be omittable from the stats query. Its
-// fallback, contributionsCollection.totalRepositoriesWithContributedCommits,
-// only counts commit contributions within the last year, which still matches
-// the "Contributed to (last year)" card label.
-const GRAPHQL_CONTRIBUTED_TO_FIELD = `
-      repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {
-        totalCount
-      }
-`;
-
-/**
- * Build the stats GraphQL query.
- *
- * @param {boolean} excludeContributedTo Exclude the expensive repositoriesContributedTo field and fetch its cheaper fallback instead.
- * @returns {string} GraphQL query.
- */
-const buildStatsQuery = (excludeContributedTo) => `
-  query userInfo($login: String!, $after: String, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!) {
-    user(login: $login) {
+const GRAPHQL_PROFILE_FIELDS = `
       name
       login
-      contributionsCollection {
-        totalCommitContributions,
-        totalPullRequestReviewContributions${
-          excludeContributedTo
-            ? `,
-        totalRepositoriesWithContributedCommits`
-            : ""
-        }
-      }
-${excludeContributedTo ? "" : GRAPHQL_CONTRIBUTED_TO_FIELD}
       pullRequests(first: 1) {
         totalCount
       }
@@ -94,9 +64,70 @@ ${excludeContributedTo ? "" : GRAPHQL_CONTRIBUTED_TO_FIELD}
         totalCount
       }
       ${GRAPHQL_REPOS_FIELD}
+`;
+
+// GitHub's GraphQL API enforces a per-query execution budget and rejects
+// queries exceeding it with RESOURCE_LIMITS_EXCEEDED (observed since around
+// 2026-07-17). For accounts with large contribution histories the budget
+// allows at most one contribution aggregation per query, and the all-time
+// repositoriesContributedTo field exceeds it on its own. The stats query is
+// therefore split into parts, each carrying at most one aggregation, with
+// contributionsCollection.totalRepositoriesWithContributedCommits standing in
+// for repositoriesContributedTo. The stand-in only counts repositories with
+// commit contributions within the last year, which still matches the
+// "Contributed to (last year)" card label.
+const GRAPHQL_STATS_QUERY_PARTS = {
+  profile: GRAPHQL_PROFILE_FIELDS,
+  commits: `
+      contributionsCollection {
+        totalCommitContributions
+      }
+`,
+  reviews: `
+      contributionsCollection {
+        totalPullRequestReviewContributions
+      }
+`,
+  contributedTo: `
+      contributionsCollection {
+        totalRepositoriesWithContributedCommits
+      }
+`,
+};
+
+const GRAPHQL_STATS_QUERY_FULL_FIELDS = `
+      contributionsCollection {
+        totalCommitContributions,
+        totalPullRequestReviewContributions
+      }
+      repositoriesContributedTo(first: 1, contributionTypes: [COMMIT, ISSUE, PULL_REQUEST, REPOSITORY]) {
+        totalCount
+      }
+      ${GRAPHQL_PROFILE_FIELDS}
+`;
+
+/**
+ * Build the stats GraphQL query.
+ *
+ * GitHub rejects queries that declare unused variables, so the aggregation
+ * parts only declare $login.
+ *
+ * @param {keyof GRAPHQL_STATS_QUERY_PARTS | undefined} part Stats query part to build; the full query when undefined.
+ * @returns {string} GraphQL query.
+ */
+const buildStatsQuery = (part) => {
+  const declarations =
+    part && part !== "profile"
+      ? "$login: String!"
+      : "$login: String!, $after: String, $includeMergedPullRequests: Boolean!, $includeDiscussions: Boolean!, $includeDiscussionsAnswers: Boolean!";
+  return `
+  query userInfo(${declarations}) {
+    user(login: $login) {
+${part ? GRAPHQL_STATS_QUERY_PARTS[part] : GRAPHQL_STATS_QUERY_FULL_FIELDS}
     }
   }
 `;
+};
 
 /**
  * @typedef {import('axios').AxiosResponse} AxiosResponse Axios response.
@@ -112,7 +143,7 @@ ${excludeContributedTo ? "" : GRAPHQL_CONTRIBUTED_TO_FIELD}
 const fetcher = (variables, token) => {
   const query = variables.after
     ? GRAPHQL_REPOS_QUERY
-    : buildStatsQuery(variables.excludeContributedTo === true);
+    : buildStatsQuery(variables.statsQueryPart);
   return request(
     {
       query,
@@ -136,6 +167,32 @@ const fetcher = (variables, token) => {
  *
  * @description This function supports multi-page fetching if the 'FETCH_MULTI_PAGE_STARS' environment variable is set to true.
  */
+/**
+ * Fetch the stats query in parts, each within GitHub's per-query resource
+ * budget, and merge them into a single response.
+ *
+ * @param {object} variables Fetcher variables.
+ * @returns {Promise<AxiosResponse>} Axios response shaped like the full stats query.
+ */
+const splitStatsFetcher = async (variables) => {
+  const parts = ["profile", "commits", "reviews", "contributedTo"];
+  const responses = await Promise.all(
+    parts.map((part) =>
+      retryer(fetcher, { ...variables, statsQueryPart: part }),
+    ),
+  );
+  const errored = responses.find((res) => res.data.errors);
+  if (errored) {
+    return errored;
+  }
+  const [profile, ...aggregations] = responses;
+  profile.data.data.user.contributionsCollection = Object.assign(
+    {},
+    ...aggregations.map((res) => res.data.data.user.contributionsCollection),
+  );
+  return profile;
+};
+
 const statsFetcher = async ({
   username,
   includeMergedPullRequests,
@@ -145,7 +202,6 @@ const statsFetcher = async ({
   let stats;
   let hasNextPage = true;
   let endCursor = null;
-  let excludeContributedTo = false;
   while (hasNextPage) {
     const variables = {
       login: username,
@@ -154,21 +210,21 @@ const statsFetcher = async ({
       includeMergedPullRequests,
       includeDiscussions,
       includeDiscussionsAnswers,
-      excludeContributedTo,
     };
     let res = await retryer(fetcher, variables);
     if (res.data.errors) {
       const isResourceLimited = res.data.errors.some(
         (error) => error.type === "RESOURCE_LIMITS_EXCEEDED",
       );
-      if (isResourceLimited && !excludeContributedTo && !endCursor) {
+      if (isResourceLimited && !endCursor) {
         logger.log(
-          "Stats query exceeded GitHub resource limits. Retrying without the repositoriesContributedTo field.",
+          "Stats query exceeded GitHub resource limits. Retrying as split queries.",
         );
-        excludeContributedTo = true;
-        continue;
+        res = await splitStatsFetcher(variables);
       }
-      return res;
+      if (res.data.errors) {
+        return res;
+      }
     }
 
     // Store stats data.

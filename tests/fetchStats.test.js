@@ -98,9 +98,29 @@ const resource_limits_error = {
   ],
 };
 
-const data_stats_fallback = JSON.parse(JSON.stringify(data_stats));
-delete data_stats_fallback.data.user.repositoriesContributedTo;
-data_stats_fallback.data.user.contributionsCollection.totalRepositoriesWithContributedCommits = 23;
+const data_stats_profile_part = JSON.parse(JSON.stringify(data_stats));
+delete data_stats_profile_part.data.user.repositoriesContributedTo;
+delete data_stats_profile_part.data.user.contributionsCollection;
+
+const data_stats_commits_part = {
+  data: {
+    user: { contributionsCollection: { totalCommitContributions: 100 } },
+  },
+};
+const data_stats_reviews_part = {
+  data: {
+    user: {
+      contributionsCollection: { totalPullRequestReviewContributions: 50 },
+    },
+  },
+};
+const data_stats_contributed_to_part = {
+  data: {
+    user: {
+      contributionsCollection: { totalRepositoriesWithContributedCommits: 23 },
+    },
+  },
+};
 
 const mock = new MockAdapter(axios);
 
@@ -193,7 +213,7 @@ describe("Test fetchStats", () => {
     );
   });
 
-  it("should fall back to totalRepositoriesWithContributedCommits when repositoriesContributedTo hits resource limits", async () => {
+  it("should split the stats query when it exceeds GitHub resource limits", async () => {
     mock.reset();
     const requests = [];
     mock.onPost("https://api.github.com/graphql").reply((cfg) => {
@@ -201,19 +221,34 @@ describe("Test fetchStats", () => {
       if (requests.length === 1) {
         return [200, resource_limits_error];
       }
-      return [200, data_stats_fallback];
+      if (cfg.data.includes("totalRepositoriesWithContributedCommits")) {
+        return [200, data_stats_contributed_to_part];
+      }
+      if (cfg.data.includes("totalPullRequestReviewContributions")) {
+        return [200, data_stats_reviews_part];
+      }
+      if (cfg.data.includes("totalCommitContributions")) {
+        return [200, data_stats_commits_part];
+      }
+      return [200, data_stats_profile_part];
     });
 
     let stats = await fetchStats("anuraghazra");
 
-    expect(requests).toHaveLength(2);
+    expect(requests).toHaveLength(5);
     expect(requests[0]).toContain("repositoriesContributedTo");
-    expect(requests[1]).not.toContain("repositoriesContributedTo");
-    expect(requests[1]).toContain("totalRepositoriesWithContributedCommits");
+    const splitRequests = requests.slice(1);
+    for (const request of splitRequests) {
+      expect(request).not.toContain("repositoriesContributedTo");
+    }
     expect(stats.contributedTo).toBe(23);
+    expect(stats.totalCommits).toBe(100);
+    expect(stats.totalReviews).toBe(50);
+    expect(stats.totalStars).toBe(300);
+    expect(stats.name).toBe("Anurag Hazra");
   });
 
-  it("should throw when resource limits persist even without repositoriesContributedTo", async () => {
+  it("should throw when resource limits persist even after splitting the query", async () => {
     mock.reset();
     mock
       .onPost("https://api.github.com/graphql")
