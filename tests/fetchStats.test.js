@@ -86,6 +86,22 @@ const error = {
   ],
 };
 
+const resource_limits_error = {
+  data: { user: null },
+  errors: [
+    {
+      type: "RESOURCE_LIMITS_EXCEEDED",
+      path: ["user", "repositoriesContributedTo"],
+      locations: [],
+      message: "Resource limits for this query exceeded.",
+    },
+  ],
+};
+
+const data_stats_fallback = JSON.parse(JSON.stringify(data_stats));
+delete data_stats_fallback.data.user.repositoriesContributedTo;
+data_stats_fallback.data.user.contributionsCollection.totalRepositoriesWithContributedCommits = 23;
+
 const mock = new MockAdapter(axios);
 
 beforeEach(() => {
@@ -174,6 +190,37 @@ describe("Test fetchStats", () => {
 
     await expect(fetchStats("anuraghazra")).rejects.toThrow(
       "Could not resolve to a User with the login of 'noname'.",
+    );
+  });
+
+  it("should fall back to totalRepositoriesWithContributedCommits when repositoriesContributedTo hits resource limits", async () => {
+    mock.reset();
+    const requests = [];
+    mock.onPost("https://api.github.com/graphql").reply((cfg) => {
+      requests.push(cfg.data);
+      if (requests.length === 1) {
+        return [200, resource_limits_error];
+      }
+      return [200, data_stats_fallback];
+    });
+
+    let stats = await fetchStats("anuraghazra");
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0]).toContain("repositoriesContributedTo");
+    expect(requests[1]).not.toContain("repositoriesContributedTo");
+    expect(requests[1]).toContain("totalRepositoriesWithContributedCommits");
+    expect(stats.contributedTo).toBe(23);
+  });
+
+  it("should throw when resource limits persist even without repositoriesContributedTo", async () => {
+    mock.reset();
+    mock
+      .onPost("https://api.github.com/graphql")
+      .reply(200, resource_limits_error);
+
+    await expect(fetchStats("anuraghazra")).rejects.toThrow(
+      "Resource limits for this query exceeded.",
     );
   });
 
