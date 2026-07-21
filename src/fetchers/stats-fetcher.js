@@ -164,14 +164,16 @@ const fetcher = (variables, token) => {
  */
 const splitStatsFetcher = async (variables) => {
   const parts = ["profile", "commits", "reviews", "contributedTo"];
-  const responses = await Promise.all(
-    parts.map((part) =>
-      retryer(fetcher, { ...variables, statsQueryPart: part }),
-    ),
-  );
-  const errored = responses.find((res) => res.data.errors);
-  if (errored) {
-    return errored;
+  // Fetched sequentially: firing the parts concurrently makes GitHub reject
+  // or drop some of them (5xx / empty responses) for accounts already at the
+  // edge of the resource budget, while the same queries succeed one at a time.
+  const responses = [];
+  for (const part of parts) {
+    const res = await retryer(fetcher, { ...variables, statsQueryPart: part });
+    if (res.data.errors) {
+      return res;
+    }
+    responses.push(res);
   }
   const [profile, ...aggregations] = responses;
   profile.data.data.user.contributionsCollection = Object.assign(
