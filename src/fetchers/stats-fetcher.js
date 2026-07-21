@@ -156,18 +156,6 @@ const fetcher = (variables, token) => {
 };
 
 /**
- * Fetch stats information for a given username.
- *
- * @param {object} variables Fetcher variables.
- * @param {string} variables.username Github username.
- * @param {boolean} variables.includeMergedPullRequests Include merged pull requests.
- * @param {boolean} variables.includeDiscussions Include discussions.
- * @param {boolean} variables.includeDiscussionsAnswers Include discussions answers.
- * @returns {Promise<AxiosResponse>} Axios response.
- *
- * @description This function supports multi-page fetching if the 'FETCH_MULTI_PAGE_STARS' environment variable is set to true.
- */
-/**
  * Fetch the stats query in parts, each within GitHub's per-query resource
  * budget, and merge them into a single response.
  *
@@ -193,6 +181,18 @@ const splitStatsFetcher = async (variables) => {
   return profile;
 };
 
+/**
+ * Fetch stats information for a given username.
+ *
+ * @param {object} variables Fetcher variables.
+ * @param {string} variables.username Github username.
+ * @param {boolean} variables.includeMergedPullRequests Include merged pull requests.
+ * @param {boolean} variables.includeDiscussions Include discussions.
+ * @param {boolean} variables.includeDiscussionsAnswers Include discussions answers.
+ * @returns {Promise<AxiosResponse>} Axios response.
+ *
+ * @description This function supports multi-page fetching if the 'FETCH_MULTI_PAGE_STARS' environment variable is set to true.
+ */
 const statsFetcher = async ({
   username,
   includeMergedPullRequests,
