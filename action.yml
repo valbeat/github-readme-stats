@@ -11,6 +11,10 @@ inputs:
     description: Directory to write the generated SVG files into.
     required: false
     default: "."
+  hide-langs:
+    description: Comma-separated languages to hide from the top languages card.
+    required: false
+    default: ""
 runs:
   using: composite
   steps:
@@ -24,3 +28,4 @@ runs:
         PAT_1: ${{ env.GITHUB_TOKEN }}
         CARD_USERNAME: ${{ inputs.username }}
         CARD_OUT_DIR: ${{ inputs.output-dir }}
+        CARD_HIDE_LANGS: ${{ inputs.hide-langs }}

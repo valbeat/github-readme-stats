@@ -8,6 +8,7 @@
 //   PAT_1          GitHub token used by the fetchers (required)
 //   CARD_USERNAME  GitHub username to render (required)
 //   CARD_OUT_DIR   Output directory (default: current directory)
+//   CARD_HIDE_LANGS  Comma-separated languages to hide (default: none)
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { renderStatsCard } from "../src/cards/stats-card.js";
@@ -22,6 +23,10 @@ if (!username) {
 }
 const outDir = process.env.CARD_OUT_DIR || ".";
 mkdirSync(outDir, { recursive: true });
+const hideLangs = (process.env.CARD_HIDE_LANGS ?? "")
+  .split(",")
+  .map((lang) => lang.trim())
+  .filter(Boolean);
 
 const THEMES = [
   ["gotham", "dark"],
@@ -52,7 +57,7 @@ for (const [theme, suffix] of THEMES) {
     langs_count: 10,
     hide_title: true,
     hide_border: true,
-    hide: ["html", "css", "shell"],
+    hide: hideLangs,
     disable_animations: true,
   });
   const langsPath = path.join(outDir, `top-langs-${suffix}.svg`);
